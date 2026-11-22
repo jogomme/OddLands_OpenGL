@@ -576,6 +576,7 @@ namespace Player
     float moveSpeed;       // 초당 이동 거리. 레벨업으로 빨라지므로 const가 아니다
     float hp, maxHp;       // 체력. 0이 되면 게임오버
     float invincible;      // 맞은 뒤 무적으로 남은 시간. 적에 붙어 있어도 매 프레임 깎이지 않게
+    bool godMode = false;  // [추가] 세미콜론 키로 켜고 끄는 테스트용 무적. 피격 후의 임시 무적과 별개다.
     glm::vec3 knockback;   // 맞았을 때 밀려나는 속도(xz). 매 프레임 줄어든다
 
     // 최고 높이 = jumpSpeed² / (2 × gravity) = 121 / 48 ≈ 2.5 (예전 7, 20 → 약 1.2)
@@ -608,7 +609,7 @@ namespace Player
     // from: 때린 적의 위치. 그 반대쪽으로 밀려난다
     void TakeDamage(float amount, const glm::vec3& from)
     {
-        if (invincible > 0.0f) return;
+        if (godMode || invincible > 0.0f) return;
         hp -= amount;
         invincible = invincibleTime;
 
@@ -1676,7 +1677,29 @@ void KeyCallback(GLFWwindow* window, int key, int scancode, int action, int mods
         return;
     }
 
-    // 레벨업 선택 중에는 1·2·3만 받는다 (점프 등이 멈춘 사이에 들어가지 않게)
+    // [추가] 테스트용 무적은 레벨업 선택 화면에서도 켜고 끌 수 있다.
+    if (key == GLFW_KEY_SEMICOLON)
+    {
+        Player::godMode = !Player::godMode;
+        cout << "[테스트] 무적 " << (Player::godMode ? "ON" : "OFF") << endl;
+        return;
+    }
+
+    // [추가] 다음 레벨에 부족한 경험치만 지급한다. 카드 선택 중에는 중복 지급하지 않는다.
+    if (key == GLFW_KEY_L)
+    {
+        if (Growth::choosing)
+            cout << "[테스트] 먼저 레벨업 카드를 선택하세요." << endl;
+        else
+        {
+            int amount = max(0, Growth::NeedExp() - Growth::exp);
+            cout << "[테스트] 경험치 +" << amount << " 지급" << endl;
+            Growth::AddExp(amount);
+        }
+        return;
+    }
+
+    // 레벨업 선택 중에는 이동·점프를 막고 1·2·3으로 강화만 선택한다.
     if (Growth::choosing)
     {
         if (key == GLFW_KEY_1) Growth::Choose(0);
@@ -1717,6 +1740,11 @@ int main()
     GLFWwindow* window = Window::Open(windowWidth, windowHeight, "Oddlands");
     if (!window) return -1;
     cout << "OpenGL " << glGetString(GL_VERSION) << endl;
+    // [추가] 콘솔 창에서 테스트 단축키와 현재 무적 상태를 확인할 수 있다.
+    cout << "\n===== 테스트 단축키 (게임 창에서 입력) =====\n"
+         << "L: 다음 레벨에 필요한 남은 경험치 즉시 지급\n"
+         << "; (세미콜론): 무적 ON / OFF (시작 상태: OFF)\n"
+         << "레벨업: 1·2·3 키 또는 카드 왼쪽 클릭으로 선택\n" << endl;
     glEnable(GL_CULL_FACE);   // 상자 뒷면은 안 그린다 (실습 21과 같음)
 
     // 실습 21의 RunPractice21과 같은 순서: 창 열기 → 초기화 → 콜백 등록 → 루프
