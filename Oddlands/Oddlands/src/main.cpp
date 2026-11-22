@@ -1259,6 +1259,87 @@ namespace Camera
     }
 }
 
+// ---------- HUD 애니메이션 (홍범기) ----------
+// [추가] 실제 게임 수치는 즉시 바꾸고, HUD에 표시하는 수치만 부드럽게 바꾼다.
+namespace HudAnimation
+{
+    // [효과] 체력 잔상: 1초 대기 후 0.4초 동안 감소. 경험치: 1초 동안 증가.
+    const float damageDelay = 1.0f, damageDuration = 0.4f, expDuration = 1.0f;
+    // 이전 체력, 현재 흰색 체력, 감소 시작 체력, 마지막 피해 후 경과 시간.
+    float previousHp, whiteHp, whiteStart, damageElapsed;
+    // 표시 경험치, 증가 시작 경험치, 목표 경험치, 증가 경과 시간.
+    float shownExp, expStart, targetExp, expElapsed;
+
+    // [추가] 레벨별 필요 경험치가 5, 10, 15, ...이므로 이전 레벨들의 합에 현재 경험치를 더한다.
+    // 누적 경험치로 계산하면 레벨업 때 바가 끝까지 찬 뒤 다음 레벨로 이어진다.
+    float TotalExp(int level, int exp)
+    {
+        return 2.5f * (level - 1) * level + exp;
+    }
+
+    // [효과] 진행률을 0~1로 제한하고, 시작과 끝에서 속도가 부드럽게 변하도록 한다.
+    float Ease(float t)
+    {
+        t = std::max(0.0f, std::min(t, 1.0f));
+        return t * t * (3.0f - 2.0f * t);
+    }
+
+    // [추가] 새 게임에서는 이전 판의 체력 잔상과 경험치 애니메이션을 남기지 않는다.
+    void Reset(float hp, int level, int exp)
+    {
+        previousHp = whiteHp = whiteStart = hp;
+        damageElapsed = damageDelay + damageDuration;
+        shownExp = expStart = targetExp = TotalExp(level, exp);
+        expElapsed = expDuration;
+    }
+
+    void Update(float dt, float hp, int level, int exp)
+    {
+        if (hp < previousHp)
+        {
+            // [효과] 흰색 바가 줄어드는 중에 다시 맞으면 피해 적용 후의 빨간색 바에 즉시 맞춘다.
+            // 대기 중에 다시 맞은 경우에는 잔상을 유지하고 대기 시간을 처음부터 센다.
+            bool shrinking = whiteHp > previousHp && damageElapsed >= damageDelay
+                && damageElapsed < damageDelay + damageDuration;
+            whiteStart = whiteHp = shrinking ? hp : std::max(whiteHp, previousHp);
+            damageElapsed = 0.0f;
+        }
+        else if (hp > previousHp)
+        {
+            // [효과] 회복했을 때는 흰색 잔상이 현재 체력보다 짧아지지 않게 한다.
+            whiteHp = std::max(whiteHp, hp);
+            whiteStart = whiteHp;
+            damageElapsed = std::min(damageElapsed, damageDelay);
+        }
+        else
+            damageElapsed += dt;
+        previousHp = hp;
+        // [효과] 대기 중에는 시작 체력을 유지하고, 대기가 끝나면 현재 체력까지 보간한다.
+        whiteHp = whiteStart + (hp - whiteStart)
+            * Ease((damageElapsed - damageDelay) / damageDuration);
+
+        float nextExp = TotalExp(level, exp);
+        if (nextExp != targetExp)
+        {
+            // [효과] 연속으로 젬을 먹어도 지금 표시 중인 위치에서 새 목표까지 1초 동안 증가한다.
+            expStart = shownExp;
+            targetExp = nextExp;
+            expElapsed = 0.0f;
+        }
+        expElapsed = std::min(expDuration, expElapsed + dt);
+        shownExp = expStart + (targetExp - expStart) * Ease(expElapsed / expDuration);
+    }
+
+    // [추가] 경험치바의 표시 진행도에 맞춰 레벨 숫자도 함께 전환한다.
+    int ShownLevel()
+    {
+        int level = 1;
+        while (shownExp >= TotalExp(level + 1, 0))
+            ++level;
+        return level;
+    }
+}
+
 // ---------- 실습과 같은 Reset / Update / DrawScene / KeyCallback ----------
 void Reset()
 {
@@ -1271,9 +1352,11 @@ void Reset()
     Growth::Reset();
     Gem::Reset();
     Effect::Reset();
+    // [추가] 게임 데이터 초기화 후 HUD의 표시 수치도 같은 값으로 맞춘다.
+    HudAnimation::Reset(Player::hp, Growth::level, Growth::exp);
 }
 
-// [추가] HUD(홍범기)가 들어오기 전까지 창 제목에 상태를 띄워서 확인한다. HUD가 생기면 지운다.
+// [추가] 창 제목에도 실제 상태를 표시한다. 레벨업 선택 안내는 카드 UI 구현 전까지 유지한다.
 void ShowStatusInTitle()
 {
     string title = "Oddlands  |  HP " + to_string((int)ceil(Player::hp)) + "/" + to_string((int)Player::maxHp)
@@ -1290,7 +1373,11 @@ void Update(float dt)
     ShowStatusInTitle();
 
     if (Growth::choosing)
+    {
+        // [추가] 레벨업 선택으로 게임이 멈춰도 HUD 애니메이션은 끝까지 진행한다.
+        HudAnimation::Update(dt, Player::hp, Growth::level, Growth::exp);
         return;   // 레벨업 선택 중에는 게임 정지
+    }
 
     playTime += dt;
 
@@ -1311,6 +1398,91 @@ void Update(float dt)
              << ", Lv " << Growth::level << "\n" << endl;
         Reset();
     }
+    // [추가] 피해와 젬 획득을 처리한 뒤 최종 수치를 HUD에 전달한다.
+    HudAnimation::Update(dt, Player::hp, Growth::level, Growth::exp);
+}
+
+// ---------- HUD 표시 (홍범기) ----------
+// [추가] 화면 좌표로 체력바·경험치바·타이머를 그린다. 글자는 3x5 픽셀 글꼴을 사용한다.
+namespace Hud
+{
+    using Mesh = vector<Mesh3D::Vertex>;
+    const glm::vec3 panel(0.07f, 0.09f, 0.11f), track(0.24f), ink(0.96f);
+
+    // [추가] 삼각형 두 개로 사각형 하나를 만든다. 패널·막대·글자 픽셀에 공통으로 사용한다.
+    void Rect(Mesh& mesh, float x, float y, float w, float h, const glm::vec3& color)
+    {
+        glm::vec3 a(x,y,0), b(x+w,y,0), c(x+w,y+h,0), d(x,y+h,0);
+        Mesh3D::AddTriangle(mesh,a,b,c,color);
+        Mesh3D::AddTriangle(mesh,a,c,d,color);
+    }
+
+    // [추가] 글자마다 15칸(가로 3 × 세로 5)을 검사하고 1인 칸만 사각형으로 그린다.
+    void Text(Mesh& mesh, float x, float y, const string& label, float pixel)
+    {
+        static const string chars = "0123456789HPLVX/:";
+        static const char* glyphs[] = {
+            "111101101101111","010110010010111","111001111100111",
+            "111001111001111","101101111001001","111100111001111",
+            "111100111101111","111001010010010","111101111101111",
+            "111101111001111","101101111101101","110101110100100",
+            "100100100100111","101101101101010","101101010101101",
+            "001001010100100","000010000010000"
+        };
+        for (char ch : label)
+        {
+            auto index = chars.find(ch);
+            if (index != string::npos)
+                for (int i = 0; i < 15; ++i)
+                    if (glyphs[index][i] == '1')
+                        Rect(mesh,x+(i%3)*pixel,y+(i/3)*pixel,pixel,pixel,ink);
+            x += 4*pixel;
+        }
+    }
+
+    // [추가] 회색 배경 위에 비율만큼 색 막대를 그린다. 비율은 0~1로 제한한다.
+    void Bar(Mesh& mesh, float x, float y, float w, float ratio, const glm::vec3& color)
+    {
+        Rect(mesh,x,y,w,10,track);
+        Rect(mesh,x,y,w*glm::clamp(ratio,0.0f,1.0f),10,color);
+    }
+
+    void Draw()
+    {
+        Mesh mesh;
+        const float width = float(windowWidth), height = float(windowHeight);
+        // [추가] 왼쪽 위: 애니메이션 중인 누적 경험치를 현재 표시 레벨의 경험치로 바꾼다.
+        Rect(mesh,14,14,250,48,panel);
+        int shownLevel = HudAnimation::ShownLevel();
+        float shownExp = HudAnimation::shownExp - HudAnimation::TotalExp(shownLevel, 0);
+        int neededExp = shownLevel * 5;
+        Text(mesh,24,21,"LV "+to_string(shownLevel)+"   "+to_string(int(shownExp))+"/"+to_string(neededExp)+" XP",2);
+        Bar(mesh,24,43,230,shownExp/neededExp,{0.05f,0.85f,0.88f});
+
+        // [추가] 위쪽 중앙: 10분에서 플레이 시간을 빼고 분:초 형태로 표시한다.
+        int seconds = std::max(0,600-int(playTime));
+        string clock = (seconds/60 < 10 ? "0" : "") + to_string(seconds/60) + ":"
+                     + (seconds%60 < 10 ? "0" : "") + to_string(seconds%60);
+        Rect(mesh,width/2-50,14,100,40,panel);
+        Text(mesh,width/2-38,24,clock,4);
+
+        // [효과] 왼쪽 아래: 흰색 잔상을 먼저 그리고 그 위에 실제 체력의 빨간색 바를 겹친다.
+        Rect(mesh,14,height-68,230,54,panel);
+        Text(mesh,24,height-60,"HP "+to_string(int(ceil(Player::hp)))+"/"+to_string(int(Player::maxHp)),3);
+        Bar(mesh,24,height-36,210,HudAnimation::whiteHp/Player::maxHp,ink);
+        Rect(mesh,24,height-36,210*glm::clamp(Player::hp/Player::maxHp,0.0f,1.0f),10,{0.93f,0.19f,0.23f});
+
+        // [추가] HUD가 3D 물체에 가려지지 않도록 깊이 검사와 뒷면 제거를 잠시 끈다.
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_CULL_FACE);
+        Mesh3D::SendMatrix(viewLocation,glm::mat4(1.0f));
+        // [추가] 직교 투영: 화면 왼쪽 위가 (0,0)이며, 화면 크기를 기준으로 위치를 정한다.
+        Mesh3D::SendMatrix(projectionLocation,glm::ortho(0.0f,width,height,0.0f));
+        DrawMesh(mesh,glm::mat4(1.0f));
+        // [추가] 다음 프레임의 3D 렌더링을 위해 기존 검사 기능을 다시 켠다.
+        glEnable(GL_CULL_FACE);
+        glEnable(GL_DEPTH_TEST);
+    }
 }
 
 void DrawScene()
@@ -1326,6 +1498,8 @@ void DrawScene()
     Player::Draw();
     Attack::Draw();
     Effect::Draw();
+    // [추가] 모든 3D 물체를 그린 다음 HUD를 마지막에 겹쳐 그린다.
+    Hud::Draw();
 }
 
 void KeyCallback(GLFWwindow* window, int key, int scancode, int action, int mods)
