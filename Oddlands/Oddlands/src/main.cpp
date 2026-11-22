@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <map>
+#include <cstddef>
 #pragma comment(lib, "gdi32.lib") // [추가] 한글 UI 글자를 Windows 글꼴로 그린다.
 using namespace std;
 
@@ -114,18 +115,24 @@ namespace Mesh3D
     {
         float x, y, z;
         float r, g, b;
+        float nx, ny, nz; // [추가] 면이 바라보는 방향(법선). 빛과의 각도로 면 밝기를 계산한다.
     };
 
-    void Push(vector<Vertex>& v, const glm::vec3& p, const glm::vec3& c)
+    void Push(vector<Vertex>& v, const glm::vec3& p, const glm::vec3& c, const glm::vec3& normal = glm::vec3(0.0f))
     {
-        v.push_back({ p.x, p.y, p.z, c.r, c.g, c.b });
+        v.push_back({ p.x, p.y, p.z, c.r, c.g, c.b, normal.x, normal.y, normal.z });
     }
 
     void AddTriangle(vector<Vertex>& v, const glm::vec3& a, const glm::vec3& b, const glm::vec3& c, const glm::vec3& color)
     {
-        Push(v, a, color);
-        Push(v, b, color);
-        Push(v, c, color);
+        // [추가] 반시계 방향 정점 두 변의 외적으로 바깥쪽 법선을 구한다.
+        // 같은 삼각형의 세 정점에 같은 법선을 넣어 각진 모델의 면을 또렷하게 유지한다.
+        glm::vec3 normal = glm::cross(b-a,c-a);
+        float length = glm::length(normal);
+        if (length > 0.000001f) normal /= length;
+        Push(v, a, color, normal);
+        Push(v, b, color, normal);
+        Push(v, c, color, normal);
     }
 
     void AddCube(vector<Vertex>& v, float h, const glm::vec3 faceColors[6])
@@ -160,6 +167,9 @@ namespace Mesh3D
 
         glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)(sizeof(float) * 3));
         glEnableVertexAttribArray(1);
+        // [추가] 세 번째 정점 속성으로 법선을 셰이더에 전달한다.
+        glVertexAttribPointer(2,3,GL_FLOAT,GL_FALSE,sizeof(Vertex),(void*)offsetof(Vertex,nx));
+        glEnableVertexAttribArray(2);
     }
 
     void Draw(GLuint vao, GLuint vbo, const vector<Vertex>& vertices, GLenum mode)
@@ -200,6 +210,8 @@ void DrawBox(const glm::vec3& size, const glm::vec3& position, const glm::vec3& 
 
 void BeginFrame(const glm::vec3& clearColor, const glm::mat4& view, const glm::mat4& projection)
 {
+    // [추가] 3D 장면에만 햇빛과 주변광을 적용한다.
+    glUniform1i(glGetUniformLocation(shaderProgram,"lightingEnabled"),1);
     glClearColor(clearColor.r, clearColor.g, clearColor.b, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     Mesh3D::SendMatrix(viewLocation, view);
@@ -1637,6 +1649,8 @@ namespace Hud
         Rect(mesh,24,height-36,210*glm::clamp(Player::hp/Player::maxHp,0.0f,1.0f),10,{0.93f,0.19f,0.23f});
 
         // [추가] HUD가 3D 물체에 가려지지 않도록 깊이 검사와 뒷면 제거를 잠시 끈다.
+        // [추가] 체력바·경험치바·한글·카드는 조명 없이 원래 색으로 표시한다.
+        glUniform1i(glGetUniformLocation(shaderProgram,"lightingEnabled"),0);
         glDisable(GL_DEPTH_TEST);
         glDisable(GL_CULL_FACE);
         Mesh3D::SendMatrix(viewLocation,glm::mat4(1.0f));
@@ -1644,6 +1658,7 @@ namespace Hud
         Mesh3D::SendMatrix(projectionLocation,glm::ortho(0.0f,width,height,0.0f));
         DrawMesh(mesh,glm::mat4(1.0f));
         DrawChoices();
+        glUniform1i(glGetUniformLocation(shaderProgram,"lightingEnabled"),1);
         // [추가] 다음 프레임의 3D 렌더링을 위해 기존 검사 기능을 다시 켠다.
         glEnable(GL_CULL_FACE);
         glEnable(GL_DEPTH_TEST);
