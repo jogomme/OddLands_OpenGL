@@ -22,6 +22,8 @@
 #include <ctime>
 #include <algorithm>
 #include <filesystem>
+#include <map>
+#pragma comment(lib, "gdi32.lib") // [추가] 한글 UI 글자를 Windows 글꼴로 그린다.
 using namespace std;
 
 // ================================================== 셰이더 (실습과 같음) ==================================================
@@ -205,6 +207,7 @@ void BeginFrame(const glm::vec3& clearColor, const glm::mat4& view, const glm::m
 }
 
 // ================================================== 창 (실습과 같음, [추가] 표시만 다름) ==================================================
+namespace Hud { void ReleaseLabels(); }
 namespace Window
 {
     void Close(GLFWwindow* window)
@@ -263,6 +266,8 @@ namespace Window
             glfwPollEvents();
         }
 
+        // [추가] OpenGL 창을 닫기 전에 한글 UI 텍스처를 해제한다.
+        Hud::ReleaseLabels();
         glDeleteBuffers(1, &VBO);
         glDeleteVertexArrays(1, &VAO);
         glDeleteProgram(shaderProgram);
@@ -975,8 +980,8 @@ namespace Enemy
 
 // ---------- 경험치·레벨업 (김민우) ----------
 // 경험치가 차면 게임을 멈추고 업그레이드 3개를 뽑아 보여 준다. 1·2·3 키로 고르면 적용하고 다시 진행.
-// 카드 UI는 홍범기 담당 → UI는 choosing, choices[], upgradeNames[]만 읽어서 그리면 된다.
-// UI가 들어오기 전까지는 콘솔 창에 선택지를 출력한다.
+// [추가] 홍범기의 카드 UI가 choosing, choices[]를 읽고, 키보드와 마우스 모두 Choose로 선택한다.
+// 콘솔 출력도 남겨 두어 선택 결과를 확인할 수 있다.
 namespace Growth
 {
     int level;
@@ -1021,6 +1026,8 @@ namespace Growth
         for (int i = 0; i < 3; i++)
             choices[i] = order[i];
         choosing = true;
+        // [수정] 피격과 레벨업이 겹치면 일시정지로 흔들림 시간이 멈추므로, 선택 화면 진입 시 끝낸다.
+        Effect::shake = 0.0f;
 
         cout << "\n===== 레벨업! Lv " << level << " =====" << endl;
         for (int i = 0; i < 3; i++)
@@ -1047,7 +1054,7 @@ namespace Growth
     // slot: 0, 1, 2 (화면의 1·2·3번 카드)
     void Choose(int slot)
     {
-        if (!choosing)
+        if (!choosing || slot < 0 || slot >= 3)
             return;
 
         int upgrade = choices[slot];
@@ -1356,14 +1363,14 @@ void Reset()
     HudAnimation::Reset(Player::hp, Growth::level, Growth::exp);
 }
 
-// [추가] 창 제목에도 실제 상태를 표시한다. 레벨업 선택 안내는 카드 UI 구현 전까지 유지한다.
+// [추가] 창 제목에도 실제 상태와 레벨업 선택 방법을 표시한다.
 void ShowStatusInTitle()
 {
     string title = "Oddlands  |  HP " + to_string((int)ceil(Player::hp)) + "/" + to_string((int)Player::maxHp)
         + "  |  Lv " + to_string(Growth::level) + " (" + to_string(Growth::exp) + "/" + to_string(Growth::NeedExp()) + ")"
         + "  |  " + to_string((int)playTime) + "s  |  처치 " + to_string(killCount);
     if (Growth::choosing)
-        title += "  |  레벨업! 1·2·3 중 선택 (콘솔 창 참고)";
+        title += "  |  레벨업! 1·2·3 또는 카드 클릭으로 선택";
 
     glfwSetWindowTitle(glfwGetCurrentContext(), title.c_str());
 }
@@ -1447,6 +1454,162 @@ namespace Hud
         Rect(mesh,x,y,w*glm::clamp(ratio,0.0f,1.0f),10,color);
     }
 
+    // [추가] 그리기와 마우스 판정이 같은 카드 위치를 사용한다. 좌표는 1280×720 기준이다.
+    struct CardRect { float x, y, w, h; };
+    CardRect Card(int slot) { return {232.0f + slot * 278.0f, 230.0f, 260.0f, 270.0f}; }
+    int HitCard(double x, double y)
+    {
+        for (int i = 0; i < 3; ++i)
+        {
+            CardRect r = Card(i);
+            if (x >= r.x && x < r.x+r.w && y >= r.y && y < r.y+r.h) return i;
+        }
+        return -1;
+    }
+    int HoveredCard()
+    {
+        GLFWwindow* window = glfwGetCurrentContext();
+        double x, y;
+        int w, h;
+        glfwGetCursorPos(window, &x, &y);
+        glfwGetWindowSize(window, &w, &h);
+        return w > 0 && h > 0 ? HitCard(x*windowWidth/w, y*windowHeight/h) : -1;
+    }
+
+    // [추가] 한글을 Windows 글꼴로 한 번 그려 텍스처로 보관한다. 매 프레임 다시 만들지 않는다.
+    struct Label { GLuint texture; int width, height; };
+    map<pair<wstring,int>,Label> labels;
+    const Label& GetLabel(const wstring& text, int size)
+    {
+        auto key = make_pair(text,size);
+        auto found = labels.find(key);
+        if (found != labels.end()) return found->second;
+        HDC dc = CreateCompatibleDC(nullptr);
+        HFONT font = CreateFontW(-size,0,0,0,FW_BOLD,FALSE,FALSE,FALSE,DEFAULT_CHARSET,
+            OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,ANTIALIASED_QUALITY,DEFAULT_PITCH,L"맑은 고딕");
+        HGDIOBJ oldFont = SelectObject(dc,font);
+        SIZE measured{};
+        GetTextExtentPoint32W(dc,text.c_str(),int(text.size()),&measured);
+        int w = max(1,int(measured.cx)+4), h = max(1,int(measured.cy)+4);
+        BITMAPINFO info{};
+        info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        info.bmiHeader.biWidth = w;
+        info.bmiHeader.biHeight = -h;
+        info.bmiHeader.biPlanes = 1;
+        info.bmiHeader.biBitCount = 32;
+        info.bmiHeader.biCompression = BI_RGB;
+        void* pixels = nullptr;
+        HBITMAP bitmap = CreateDIBSection(dc,&info,DIB_RGB_COLORS,&pixels,nullptr,0);
+        HGDIOBJ oldBitmap = SelectObject(dc,bitmap);
+        memset(pixels,0,size_t(w)*h*4);
+        SetBkColor(dc,RGB(0,0,0));
+        SetTextColor(dc,RGB(255,255,255));
+        TextOutW(dc,2,2,text.c_str(),int(text.size()));
+        GdiFlush();
+        vector<unsigned char> rgba(size_t(w)*h*4,255);
+        const auto* src = static_cast<unsigned char*>(pixels);
+        for (size_t i=0; i<size_t(w)*h; ++i)
+            rgba[i*4+3] = max(src[i*4],max(src[i*4+1],src[i*4+2]));
+        GLuint texture;
+        glGenTextures(1,&texture);
+        glBindTexture(GL_TEXTURE_2D,texture);
+        glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,w,h,0,GL_RGBA,GL_UNSIGNED_BYTE,rgba.data());
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+        SelectObject(dc,oldBitmap);
+        SelectObject(dc,oldFont);
+        DeleteObject(bitmap);
+        DeleteObject(font);
+        DeleteDC(dc);
+        return labels.emplace(key,Label{texture,w,h}).first->second;
+    }
+    void LabelAt(const wstring& text, float centerX, float y, int size, const glm::vec3& color = ink)
+    {
+        const Label& label = GetLabel(text,size);
+        float x = centerX-label.width*0.5f, w = float(label.width), h = float(label.height);
+        // [추가] 글자 모드에서만 정점 색상 자리에 텍스처 좌표(u,v)를 전달한다.
+        Mesh mesh;
+        Mesh3D::Push(mesh,{x,y,0},{0,0,0});
+        Mesh3D::Push(mesh,{x+w,y,0},{1,0,0});
+        Mesh3D::Push(mesh,{x+w,y+h,0},{1,1,0});
+        Mesh3D::Push(mesh,{x,y,0},{0,0,0});
+        Mesh3D::Push(mesh,{x+w,y+h,0},{1,1,0});
+        Mesh3D::Push(mesh,{x,y+h,0},{0,1,0});
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D,label.texture);
+        glUniform1i(glGetUniformLocation(shaderProgram,"uiText"),1);
+        glUniform1i(glGetUniformLocation(shaderProgram,"uiTexture"),0);
+        glUniform3fv(glGetUniformLocation(shaderProgram,"uiTint"),1,glm::value_ptr(color));
+        DrawMesh(mesh,glm::mat4(1));
+        glUniform1i(glGetUniformLocation(shaderProgram,"uiText"),0);
+    }
+    void ReleaseLabels()
+    {
+        for (const auto& entry : labels) glDeleteTextures(1,&entry.second.texture);
+        labels.clear();
+    }
+
+    // [추가] 강화 종류마다 픽셀 아이콘을 사용한다. 네 번째 흡수 범위 강화도 표시한다.
+    void Icon(Mesh& mesh, int upgrade, float x, float y)
+    {
+        const char* patterns[] = {
+            "000000000110000000011100000000111000000001110000000011100000000111000000111110000000111000000001011000000110000000000000000000000000",
+            "001100011000001100011000001100011000001100011000001100011000001100011000011100111000111101111000111101111000000000000000000000000000",
+            "000000000000011100111000111111111100111111111100111111111100011111111000001111110000000111100000000011000000000000000000000000000000",
+            "001100001100011100001110011100001110011100001110011100001110011100001110011100001110001110011100000111111000000011110000000000000000"
+        };
+        glm::vec3 color = upgrade==0 ? glm::vec3(1,0.72f,0.2f) : upgrade==1 ? glm::vec3(0.15f,0.65f,1)
+            : upgrade==2 ? glm::vec3(1,0.18f,0.22f) : glm::vec3(0.65f,0.4f,1);
+        const string pattern(patterns[upgrade]);
+        for (int i=0; i<int(pattern.size()) && i<132; ++i)
+            if (pattern[i]=='1') Rect(mesh,x+(i%12)*7,y+(i/12)*7,7,7,color);
+    }
+
+    void DrawChoices()
+    {
+        if (!Growth::choosing) return;
+        // [효과] 게임 화면과 HUD 위에 반투명 검정을 덮어 일시정지 상태를 강조한다.
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
+        Mesh mesh;
+        Rect(mesh,0,0,float(windowWidth),float(windowHeight),{0,0,0});
+        glUniform1f(glGetUniformLocation(shaderProgram,"uiOpacity"),0.62f);
+        DrawMesh(mesh,glm::mat4(1));
+        glUniform1f(glGetUniformLocation(shaderProgram,"uiOpacity"),1.0f);
+        mesh.clear();
+        int hovered = HoveredCard();
+        const glm::vec3 accents[] = {{1,0.61f,0.05f},{0,0.9f,0.95f},{1,0.2f,0.25f},{0.7f,0.4f,1}};
+        for (int i=0; i<3; ++i)
+        {
+            CardRect r = Card(i);
+            int upgrade = Growth::choices[i];
+            float border = i==hovered ? 5.0f : 3.0f;
+            Rect(mesh,r.x,r.y,r.w,r.h,accents[upgrade]);
+            Rect(mesh,r.x+border,r.y+border,r.w-2*border,r.h-2*border,
+                i==hovered ? glm::vec3(0.16f,0.2f,0.23f) : glm::vec3(0.1f,0.11f,0.12f));
+            Icon(mesh,upgrade,r.x+r.w/2-42,r.y+80);
+            Rect(mesh,r.x+r.w/2-25,r.y+216,50,42,ink);
+            Rect(mesh,r.x+r.w/2-23,r.y+218,46,38,panel);
+        }
+        DrawMesh(mesh,glm::mat4(1));
+        LabelAt(L"레벨 업!",640,80,64);
+        LabelAt(L"강화를 하나 선택하세요",640,167,30);
+        const wchar_t* titles[] = {L"공격력 강화",L"이동 속도 강화",L"최대 체력 강화",L"흡수 범위 강화"};
+        const wchar_t* descriptions[] = {L"공격력 +1",L"이동 속도 +10%",L"최대 체력 +20",L"흡수 범위 +1"};
+        for (int i=0; i<3; ++i)
+        {
+            CardRect r = Card(i);
+            int upgrade = Growth::choices[i];
+            LabelAt(titles[upgrade],r.x+r.w/2,r.y+15,28,accents[upgrade]);
+            LabelAt(descriptions[upgrade],r.x+r.w/2,r.y+165,25);
+            LabelAt(to_wstring(i+1),r.x+r.w/2,r.y+216,30);
+        }
+        LabelAt(L"1 · 2 · 3 키 또는 마우스 클릭으로 선택",640,520,25);
+        glDisable(GL_BLEND);
+    }
+
     void Draw()
     {
         Mesh mesh;
@@ -1479,6 +1642,7 @@ namespace Hud
         // [추가] 직교 투영: 화면 왼쪽 위가 (0,0)이며, 화면 크기를 기준으로 위치를 정한다.
         Mesh3D::SendMatrix(projectionLocation,glm::ortho(0.0f,width,height,0.0f));
         DrawMesh(mesh,glm::mat4(1.0f));
+        DrawChoices();
         // [추가] 다음 프레임의 3D 렌더링을 위해 기존 검사 기능을 다시 켠다.
         glEnable(GL_CULL_FACE);
         glEnable(GL_DEPTH_TEST);
@@ -1524,6 +1688,14 @@ void KeyCallback(GLFWwindow* window, int key, int scancode, int action, int mods
     if (key == GLFW_KEY_SPACE) Player::Jump();
 }
 
+// [추가] 레벨업 중에만 왼쪽 클릭을 받는다. 화면 밖이나 카드 사이를 누르면 선택하지 않는다.
+void MouseButtonCallback(GLFWwindow* window, int button, int action, int mods)
+{
+    if (!Growth::choosing || button != GLFW_MOUSE_BUTTON_LEFT || action != GLFW_PRESS) return;
+    int slot = Hud::HoveredCard();
+    if (slot >= 0) Growth::Choose(slot);
+}
+
 // [추가] 실행 파일이 있는 폴더를 작업 폴더로 바꾼다.
 // Visual Studio, Rider, 탐색기 더블클릭 등 어디서 실행해도 "shaders/..." 경로가 같은 곳을 가리키게 하기 위함.
 void SetWorkingDirectoryToExe()
@@ -1550,6 +1722,7 @@ int main()
     // 실습 21의 RunPractice21과 같은 순서: 창 열기 → 초기화 → 콜백 등록 → 루프
     Reset();
     glfwSetKeyCallback(window, KeyCallback);
+    glfwSetMouseButtonCallback(window, MouseButtonCallback);
     Window::Run(window, Update, DrawScene);
     return 0;
 }
