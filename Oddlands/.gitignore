@@ -1,0 +1,16 @@
+# Visual Studio / Rider
+.vs/
+.idea/
+*.user
+*.suo
+*.VC.db
+*.VC.opendb
+*.aps
+*.ipch
+
+# 빌드 결과 (각자 PC에서 만들어짐)
+# 앞에 /를 붙여 저장소 맨 위 폴더만 무시한다. External/bin, External/lib/x64는 올려야 하기 때문.
+/bin/
+/obj/
+/x64/
+/Oddlands/x64/

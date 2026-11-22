@@ -1,0 +1,16 @@
+# 줄바꿈 자동 변환 (Windows 두 대 기준)
+* text=auto
+
+*.cpp text eol=crlf
+*.h text eol=crlf
+*.vert text eol=crlf
+*.frag text eol=crlf
+*.sln text eol=crlf
+*.vcxproj text eol=crlf
+*.filters text eol=crlf
+
+# 바이너리
+*.lib binary
+*.dll binary
+*.png binary
+*.jpg binary
